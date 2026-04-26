@@ -1,0 +1,6 @@
+{
+  "name": "Vento",
+  "description": "Vento is an elegant event management application with a secure SQLite backend infrastructure.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
