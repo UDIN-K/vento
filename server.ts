@@ -1,38 +1,29 @@
 import express from 'express';
 import cors from 'cors';
-import Database from 'better-sqlite3';
+import mysql from 'mysql2/promise';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const dbFile = path.resolve(__dirname, 'database.sqlite');
-const db = new Database(dbFile);
-
-// Initialize DB schema
-db.exec(`
-  CREATE TABLE IF NOT EXISTS events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    date TEXT NOT NULL,
-    location TEXT NOT NULL,
-    description TEXT,
-    capacity INTEGER NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS registrations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    email TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (event_id) REFERENCES events (id) ON DELETE CASCADE
-  );
-`);
+// Create MySQL connection pool
+// This won't throw immediately, it throws when a connection is actually attempted
+const pool = mysql.createPool({
+  host: process.env.DB_HOST || 'localhost',
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'sam',
+  port: parseInt(process.env.DB_PORT || '3306', 10),
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
 
 async function startServer() {
   const app = express();
@@ -44,58 +35,60 @@ async function startServer() {
   // API ROUTES
   
   // 1. Get all events
-  app.get('/api/events', (req, res) => {
+  app.get('/api/events', async (req, res) => {
     try {
-      const rows = db.prepare('SELECT * FROM events ORDER BY date ASC').all();
+      const [rows] = await pool.query('SELECT * FROM events ORDER BY date ASC');
       res.json(rows);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      console.error(err);
+      res.status(500).json({ error: 'Database connection failed. Please ensure MariaDB/MySQL is running and configured.' });
     }
   });
 
   // 2. Get single event
-  app.get('/api/events/:id', (req, res) => {
+  app.get('/api/events/:id', async (req, res) => {
     try {
       const { id } = req.params;
-      const row = db.prepare('SELECT * FROM events WHERE id = ?').get(id);
-      if (!row) return res.status(404).json({ error: 'Event not found' });
-      res.json(row);
+      const [rows]: any = await pool.query('SELECT * FROM events WHERE id = ?', [id]);
+      if (rows.length === 0) return res.status(404).json({ error: 'Event not found' });
+      res.json(rows[0]);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
   // 3. Create new event
-  app.post('/api/events', (req, res) => {
+  app.post('/api/events', async (req, res) => {
     try {
       const { title, date, location, description, capacity } = req.body;
       if (!title || !date || !location || !capacity) {
         return res.status(400).json({ error: 'Missing required fields' });
       }
       
-      const info = db.prepare(
-        'INSERT INTO events (title, date, location, description, capacity) VALUES (?, ?, ?, ?, ?)'
-      ).run(title, date, location, description, capacity);
+      const [result]: any = await pool.execute(
+        'INSERT INTO events (title, date, location, description, capacity) VALUES (?, ?, ?, ?, ?)',
+        [title, date, location, description, capacity]
+      );
       
-      res.json({ id: info.lastInsertRowid, ...req.body });
+      res.json({ id: result.insertId, ...req.body });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
   // 4. Delete event
-  app.delete('/api/events/:id', (req, res) => {
+  app.delete('/api/events/:id', async (req, res) => {
     try {
       const { id } = req.params;
-      const info = db.prepare('DELETE FROM events WHERE id = ?').run(id);
-      res.json({ success: true, deleted: info.changes });
+      const [result]: any = await pool.execute('DELETE FROM events WHERE id = ?', [id]);
+      res.json({ success: true, deleted: result.affectedRows });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
   // 5. Register for event
-  app.post('/api/events/:id/register', (req, res) => {
+  app.post('/api/events/:id/register', async (req, res) => {
     try {
       const { id } = req.params;
       const { name, email } = req.body;
@@ -105,29 +98,34 @@ async function startServer() {
       }
 
       // Check capacity first
-      const row: any = db.prepare('SELECT capacity, (SELECT COUNT(*) FROM registrations WHERE event_id = ?) as registered FROM events WHERE id = ?').get(id, id);
+      const [rows]: any = await pool.query(
+        'SELECT capacity, (SELECT COUNT(*) FROM registrations WHERE event_id = ?) as registered FROM events WHERE id = ?',
+        [id, id]
+      );
       
-      if (!row) return res.status(404).json({ error: 'Event not found' });
-        
+      if (rows.length === 0) return res.status(404).json({ error: 'Event not found' });
+      
+      const row = rows[0];
       if (row.registered >= row.capacity) {
         return res.status(400).json({ error: 'Event is at full capacity' });
       }
 
-      const info = db.prepare(
-        'INSERT INTO registrations (event_id, name, email) VALUES (?, ?, ?)'
-      ).run(id, name, email);
+      const [result]: any = await pool.execute(
+        'INSERT INTO registrations (event_id, name, email) VALUES (?, ?, ?)',
+        [id, name, email]
+      );
       
-      res.json({ id: info.lastInsertRowid, event_id: id, name, email });
+      res.json({ id: result.insertId, event_id: id, name, email });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
   // 6. Get registrations for an event
-  app.get('/api/events/:id/registrations', (req, res) => {
+  app.get('/api/events/:id/registrations', async (req, res) => {
     try {
       const { id } = req.params;
-      const rows = db.prepare('SELECT * FROM registrations WHERE event_id = ? ORDER BY created_at DESC').all(id);
+      const [rows] = await pool.query('SELECT * FROM registrations WHERE event_id = ? ORDER BY created_at DESC', [id]);
       res.json(rows);
     } catch (err: any) {
       res.status(500).json({ error: err.message });

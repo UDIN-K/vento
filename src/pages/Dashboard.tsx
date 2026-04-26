@@ -115,7 +115,7 @@ export default function Dashboard() {
             <Card 
               key={event.id} 
               className="flex flex-col h-full bg-sys-card hover:shadow-lg transition-all duration-300 animate-in fade-in slide-in-from-bottom-4"
-              style={{ animationFillMode: 'both', animationDelay: \`\${idx * 100}ms\` }}
+              style={{ animationFillMode: 'both', animationDelay: `${idx * 100}ms` }}
             >
               <CardHeader className="p-0">
                 <div className="h-2 w-full bg-gradient-to-r from-sys-border to-sys-border border-b border-sys-border opacity-50"></div>
